@@ -1,0 +1,12 @@
+/*
+!/equivoc_cli
+!/equivoc_engine
+!/equivoc_frontend_rb
+!/.gitignore
+!/Cargo.lock
+!/Cargo.toml
+!/entry.rb
+!/equivoc.rb
+!/Gemfile
+!/Gemfile.lock
+!/README.md

@@ -1,0 +1,9 @@
+[package]
+name = "equivoc_engine"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+
+[dependencies]
+image = { workspace = true }
+serde = { workspace = true }
