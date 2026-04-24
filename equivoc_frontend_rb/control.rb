@@ -65,10 +65,11 @@ def e_if(condition, then_block = nil, else_block = nil, &block)
   InstructionCollector.instructions << If.new(variable_updates, condition, then_instructions, else_instructions)
 end
 
-def e_for(loop_counts, &block)
-  loop_counts = [loop_counts] unless loop_counts.instance_of? Array
-  loop_counts = loop_counts.map { Variable.from(it) }
-  loop_indices = loop_counts.map { Variable.new }
+def e_for(loop_count, &block)
+  raise ArgumentError, "e_for expects a single loop count" if loop_count.instance_of? Array
+
+  loop_count = Variable.from(loop_count)
+  loop_index = Variable.new
 
   block.binding.local_variables.each do |variable_name|
     block.binding.local_variable_set(variable_name, Variable.from(block.binding.local_variable_get(variable_name)))
@@ -78,14 +79,14 @@ def e_for(loop_counts, &block)
   end.to_h
 
   block_instruction = InstructionCollector.stack_instructions do
-    block.call(*loop_indices)
+    block.call(loop_index)
   end
   variable_updates = block.binding.local_variables.map do |variable_name|
     updated_value = block.binding.local_variable_get(variable_name)
     next [before_variables[variable_name], updated_value] unless before_variables[variable_name].equal? updated_value
   end.filter { |pair| pair }
 
-  InstructionCollector.instructions << For.new(variable_updates, loop_counts, loop_indices, block_instruction)
+  InstructionCollector.instructions << For.new(variable_updates, loop_count, loop_index, block_instruction)
 end
 
 def e_loop(&block)

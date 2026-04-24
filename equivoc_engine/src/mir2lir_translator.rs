@@ -94,16 +94,15 @@ fn infer_types(instructions: &[EquivocMirInstruction], type_map: &mut TypeMap) {
             }
             EquivocMirInstruction::For {
                 variable_updates,
-                loop_counts,
-                loop_indices,
+                loop_count,
+                loop_index,
                 instructions,
             } => {
-                for i in loop_counts {
-                    assert_eq!(type_map.get(i).unwrap(), &EquivocLirValueType::Integer);
-                }
-                for i in loop_indices {
-                    type_map.insert(*i, EquivocLirValueType::Integer);
-                }
+                assert_eq!(
+                    type_map.get(loop_count).unwrap(),
+                    &EquivocLirValueType::Integer
+                );
+                type_map.insert(*loop_index, EquivocLirValueType::Integer);
                 infer_types(instructions, type_map);
                 for v in variable_updates {
                     assert_eq!(
@@ -386,14 +385,14 @@ fn build_single_block_from_instructions(
             }
             EquivocMirInstruction::For {
                 variable_updates,
-                loop_counts,
-                loop_indices,
+                loop_count,
+                loop_index,
                 instructions,
             } => {
                 let for_block = lir_builder.next_block();
                 refresh_block!(next_block => EquivocLirTerminateInstruction::For {
-                    loop_counts: loop_counts.iter().map(|v| to_lir_var(*v, type_map)).collect(),
-                    loop_indices: loop_indices.iter().map(|v| to_lir_var(*v, type_map)).collect(),
+                    loop_count: to_lir_var(*loop_count, type_map),
+                    loop_index: to_lir_var(*loop_index, type_map),
                     loop_block: for_block.id(),
                     next_block,
                 });

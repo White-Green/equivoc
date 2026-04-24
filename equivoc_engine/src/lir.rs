@@ -251,8 +251,8 @@ pub enum EquivocLirTerminateInstruction {
         else_block: EquivocLirBasicBlockId,
     },
     For {
-        loop_counts: Vec<EquivocLirVariable>,
-        loop_indices: Vec<EquivocLirVariable>,
+        loop_count: EquivocLirVariable,
+        loop_index: EquivocLirVariable,
         loop_block: EquivocLirBasicBlockId,
         next_block: EquivocLirBasicBlockId,
     },

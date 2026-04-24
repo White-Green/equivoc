@@ -1,9 +1,9 @@
 use clap::Parser;
+use equivoc_engine::basic_block_interpreter::execute;
 use equivoc_engine::mir::EquivocMir;
+use equivoc_engine::mir2lir_translator::convert_equivoc_mir_to_equivoc_lir;
 use std::io;
 use std::io::Read;
-use equivoc_engine::basic_block_interpreter::execute;
-use equivoc_engine::mir2lir_translator::convert_equivoc_mir_to_equivoc_lir;
 
 #[derive(Debug, clap::Parser)]
 struct CliOption {

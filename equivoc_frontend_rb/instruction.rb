@@ -40,10 +40,10 @@ class If < Instruction
 end
 
 class For < Instruction
-  def initialize(variable_updates, loop_counts, loop_indices, instructions)
+  def initialize(variable_updates, loop_count, loop_index, instructions)
     @variable_updates = variable_updates
-    @loop_counts = loop_counts
-    @loop_indices = loop_indices
+    @loop_count = loop_count
+    @loop_index = loop_index
     @instructions = instructions
   end
 end

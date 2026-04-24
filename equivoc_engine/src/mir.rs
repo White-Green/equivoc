@@ -52,8 +52,8 @@ pub enum EquivocMirInstruction {
     },
     For {
         variable_updates: Vec<LoopVariableUpdate>,
-        loop_counts: Vec<EquivocMirVariable>,
-        loop_indices: Vec<EquivocMirVariable>,
+        loop_count: EquivocMirVariable,
+        loop_index: EquivocMirVariable,
         instructions: Vec<EquivocMirInstruction>,
     },
     Loop {

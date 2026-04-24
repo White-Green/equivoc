@@ -119,7 +119,7 @@ fn execute_block<'a>(
                     let image = memory.get::<image::RgbaImage>(*image).unwrap();
                     let path = memory.get::<String>(*path).unwrap();
                     image.save(&path).unwrap();
-                },
+                }
                 EquivocLirInstruction::ImageWidth { out, image } => {
                     let image = memory.get::<image::RgbaImage>(*image).unwrap();
                     let width = image.width();
@@ -163,34 +163,17 @@ fn execute_block<'a>(
                 }
             }
             EquivocLirTerminateInstruction::For {
-                loop_counts,
-                loop_indices,
+                loop_count,
+                loop_index,
                 loop_block,
                 next_block,
             } => {
-                assert_eq!(loop_counts.len(), loop_indices.len());
-                let loop_counts = loop_counts
-                    .iter()
-                    .map(|&v| *memory.get::<i64>(v).unwrap())
-                    .zip(loop_indices.iter().copied())
-                    .collect::<Vec<_>>();
+                let len = *memory.get::<i64>(*loop_count).unwrap();
                 let loop_block = &basic_blocks[u32::from(*loop_block) as usize];
-                fn for_internal(
-                    loop_counts: &[(i64, EquivocLirVariable)],
-                    loop_block: &EquivocLirBasicBlock,
-                    memory: &mut Memory,
-                    program: &EquivocLir,
-                ) {
-                    if let Some((&(len, v), tail)) = loop_counts.split_first() {
-                        for i in 0..len {
-                            memory.set(v, i);
-                            for_internal(tail, loop_block, memory, program);
-                        }
-                    } else {
-                        execute_block(loop_block, memory, program);
-                    }
+                for i in 0..len {
+                    memory.set(*loop_index, i);
+                    execute_block(loop_block, memory, program);
                 }
-                for_internal(&loop_counts, loop_block, memory, program);
                 pc = &basic_blocks[u32::from(*next_block) as usize];
             }
             EquivocLirTerminateInstruction::Continue => return,
