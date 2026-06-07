@@ -46,7 +46,7 @@ Kernel.at_exit do
     functions: functions,
     main_instructions: InstructionCollector.instructions
   }
-  Open3.popen3({"RUSTFLAGS" => "-A warnings"}, "cargo run --package=equivoc_cli --release -- --read-mir-from-stdin", chdir: __dir__) do |i, o, e, wait_thr|
+  Open3.popen3({"RUSTFLAGS" => "-A warnings"}, "cargo run --package=equivoc_cli --release -- --read-frontend-ir-from-stdin", chdir: __dir__) do |i, o, e, wait_thr|
     t1 = Thread.new do
       o.each { |line| $stdout.puts line }
     end

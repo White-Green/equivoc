@@ -1,148 +1,205 @@
 use crate::lir::{
-    EquivocLir, EquivocLirBasicBlock, EquivocLirBasicBlockBuilder, EquivocLirBasicBlockId,
-    EquivocLirBuilder, EquivocLirFunction, EquivocLirInstruction, EquivocLirTerminateInstruction,
-    EquivocLirValueType, EquivocLirVariable,
+    EquivocLir, EquivocLirBasicBlock, EquivocLirBasicBlockBuilder, EquivocLirBuilder,
+    EquivocLirFunction, EquivocLirInstruction, EquivocLirTerminateInstruction, EquivocLirValueType,
+    EquivocLirVariable,
 };
 use crate::mir::{
-    EquivocMir, EquivocMirInstruction, EquivocMirVariable, IfVariableUpdate, LoopVariableUpdate,
+    EquivocMir, EquivocMirLoopCarried, EquivocMirOperation, EquivocMirOperationKind,
+    EquivocMirReduction, EquivocMirReductionOp, EquivocMirRegion, EquivocMirValueId,
 };
 use std::collections::HashMap;
 
-type TypeMap = HashMap<EquivocMirVariable, EquivocLirValueType>;
+type TypeMap = HashMap<EquivocMirValueId, EquivocLirValueType>;
 
-/// MIR命令を解析して変数の型を推論する（再帰的）
-fn infer_types(instructions: &[EquivocMirInstruction], type_map: &mut TypeMap) {
-    for instr in instructions {
-        match instr {
-            // Load ～ 系は出力変数の型を直接決定できる
-            EquivocMirInstruction::LoadIntegerConst { out, .. } => {
-                type_map.insert(*out, EquivocLirValueType::Integer);
-            }
-            EquivocMirInstruction::LoadFloatConst { out, .. } => {
-                type_map.insert(*out, EquivocLirValueType::Float);
-            }
-            EquivocMirInstruction::LoadStringConst { out, .. } => {
-                type_map.insert(*out, EquivocLirValueType::String);
-            }
-            EquivocMirInstruction::LoadBooleanConst { out, .. } => {
-                type_map.insert(*out, EquivocLirValueType::Boolean);
-            }
-            EquivocMirInstruction::LoadImage { out, .. } => {
-                type_map.insert(*out, EquivocLirValueType::Image);
-            }
+fn first_result(op: &EquivocMirOperation) -> EquivocMirValueId {
+    *op.results
+        .first()
+        .expect("operation must have a result value")
+}
 
-            EquivocMirInstruction::Add { out, lhs, rhs }
-            | EquivocMirInstruction::Sub { out, lhs, rhs }
-            | EquivocMirInstruction::Mul { out, lhs, rhs }
-            | EquivocMirInstruction::Div { out, lhs, rhs }
-            | EquivocMirInstruction::Mod { out, lhs, rhs } => {
+fn infer_region_types(region: &EquivocMirRegion, type_map: &mut TypeMap) {
+    for op in &region.operations {
+        match &op.kind {
+            EquivocMirOperationKind::LoadIntegerConst { .. } => {
+                type_map.insert(first_result(op), EquivocLirValueType::Integer);
+            }
+            EquivocMirOperationKind::LoadFloatConst { .. } => {
+                type_map.insert(first_result(op), EquivocLirValueType::Float);
+            }
+            EquivocMirOperationKind::LoadStringConst { .. } => {
+                type_map.insert(first_result(op), EquivocLirValueType::String);
+            }
+            EquivocMirOperationKind::LoadBooleanConst { .. } => {
+                type_map.insert(first_result(op), EquivocLirValueType::Boolean);
+            }
+            EquivocMirOperationKind::LoadImage { .. } => {
+                type_map.insert(first_result(op), EquivocLirValueType::Image);
+            }
+            EquivocMirOperationKind::Add { lhs, rhs }
+            | EquivocMirOperationKind::Sub { lhs, rhs }
+            | EquivocMirOperationKind::Mul { lhs, rhs }
+            | EquivocMirOperationKind::Div { lhs, rhs }
+            | EquivocMirOperationKind::Mod { lhs, rhs } => {
+                let lhs_type = *type_map.get(lhs).unwrap();
+                assert_eq!(&lhs_type, type_map.get(rhs).unwrap());
+                type_map.insert(first_result(op), lhs_type);
+            }
+            EquivocMirOperationKind::Equals { lhs, rhs }
+            | EquivocMirOperationKind::NotEquals { lhs, rhs }
+            | EquivocMirOperationKind::LessThan { lhs, rhs }
+            | EquivocMirOperationKind::LessThanOrEquals { lhs, rhs }
+            | EquivocMirOperationKind::GreaterThan { lhs, rhs }
+            | EquivocMirOperationKind::GreaterThanOrEquals { lhs, rhs } => {
                 let lhs_type = type_map.get(lhs).unwrap();
                 assert_eq!(lhs_type, type_map.get(rhs).unwrap());
-                type_map.insert(*out, lhs_type.clone());
+                type_map.insert(first_result(op), EquivocLirValueType::Boolean);
             }
-            EquivocMirInstruction::Equals { out, lhs, rhs }
-            | EquivocMirInstruction::NotEquals { out, lhs, rhs }
-            | EquivocMirInstruction::LessThan { out, lhs, rhs }
-            | EquivocMirInstruction::LessThanOrEquals { out, lhs, rhs }
-            | EquivocMirInstruction::GreaterThan { out, lhs, rhs }
-            | EquivocMirInstruction::GreaterThanOrEquals { out, lhs, rhs } => {
-                let lhs_type = type_map.get(lhs).unwrap();
-                assert_eq!(lhs_type, type_map.get(rhs).unwrap());
-                type_map.insert(*out, EquivocLirValueType::Boolean);
-            }
-            EquivocMirInstruction::ImageWidth { out, image }
-            | EquivocMirInstruction::ImageHeight { out, image } => {
+            EquivocMirOperationKind::ImageWidth { image }
+            | EquivocMirOperationKind::ImageHeight { image } => {
                 assert_eq!(type_map.get(image).unwrap(), &EquivocLirValueType::Image);
-                type_map.insert(*out, EquivocLirValueType::Integer);
+                type_map.insert(first_result(op), EquivocLirValueType::Integer);
             }
-            EquivocMirInstruction::ReadImagePixel { out, image, x, y } => {
+            EquivocMirOperationKind::ReadImagePixel { image, x, y } => {
                 assert_eq!(type_map.get(image).unwrap(), &EquivocLirValueType::Image);
                 assert_eq!(type_map.get(x).unwrap(), &EquivocLirValueType::Integer);
                 assert_eq!(type_map.get(y).unwrap(), &EquivocLirValueType::Integer);
-                type_map.insert(*out, EquivocLirValueType::Pixel);
+                type_map.insert(first_result(op), EquivocLirValueType::Pixel);
             }
-            EquivocMirInstruction::WriteImage { image, path } => {
+            EquivocMirOperationKind::WriteImage { image, path } => {
                 assert_eq!(type_map.get(image).unwrap(), &EquivocLirValueType::Image);
                 assert_eq!(type_map.get(path).unwrap(), &EquivocLirValueType::String);
             }
-            EquivocMirInstruction::WriteImagePixel { image, x, y, pixel } => {
+            EquivocMirOperationKind::WriteImagePixel { image, x, y, pixel } => {
                 assert_eq!(type_map.get(image).unwrap(), &EquivocLirValueType::Image);
                 assert_eq!(type_map.get(x).unwrap(), &EquivocLirValueType::Integer);
                 assert_eq!(type_map.get(y).unwrap(), &EquivocLirValueType::Integer);
                 assert_eq!(type_map.get(pixel).unwrap(), &EquivocLirValueType::Pixel);
             }
-
-            EquivocMirInstruction::CallFunction { .. } => {
-                todo!()
-            }
-            EquivocMirInstruction::Return { .. } => {
-                todo!()
-            }
-
-            EquivocMirInstruction::If {
+            EquivocMirOperationKind::If {
                 condition,
-                then_instructions,
-                else_instructions,
-                ..
+                then_region,
+                else_region,
             } => {
                 assert_eq!(
                     type_map.get(condition).unwrap(),
                     &EquivocLirValueType::Boolean
                 );
-                infer_types(then_instructions, type_map);
-                infer_types(else_instructions, type_map);
-            }
-            EquivocMirInstruction::For {
-                variable_updates,
-                loop_count,
-                loop_index,
-                instructions,
-            } => {
-                assert_eq!(
-                    type_map.get(loop_count).unwrap(),
-                    &EquivocLirValueType::Integer
-                );
-                type_map.insert(*loop_index, EquivocLirValueType::Integer);
-                infer_types(instructions, type_map);
-                for v in variable_updates {
-                    assert_eq!(
-                        type_map.get(&v.base).unwrap(),
-                        type_map.get(&v.updated).unwrap()
-                    );
+                infer_region_types(then_region, type_map);
+                infer_region_types(else_region, type_map);
+                assert_eq!(op.results.len(), then_region.results.len());
+                assert_eq!(op.results.len(), else_region.results.len());
+                for ((result, then_value), else_value) in op
+                    .results
+                    .iter()
+                    .zip(&then_region.results)
+                    .zip(&else_region.results)
+                {
+                    let ty = *type_map.get(then_value).unwrap();
+                    assert_eq!(&ty, type_map.get(else_value).unwrap());
+                    type_map.insert(*result, ty);
                 }
             }
-            EquivocMirInstruction::Loop {
-                variable_updates,
-                instructions,
+            EquivocMirOperationKind::For {
+                count,
+                index,
+                carried,
+                reductions,
+                body,
+                ..
             } => {
-                infer_types(instructions, type_map);
-                for v in variable_updates {
-                    assert_eq!(
-                        type_map.get(&v.base).unwrap(),
-                        type_map.get(&v.updated).unwrap()
-                    );
+                assert_eq!(type_map.get(count).unwrap(), &EquivocLirValueType::Integer);
+                type_map.insert(*index, EquivocLirValueType::Integer);
+                infer_region_types(body, type_map);
+                assert_eq!(op.results.len(), carried.len() + reductions.len());
+                for (result, carried) in op.results.iter().zip(carried) {
+                    let ty = *type_map.get(&carried.initial).unwrap();
+                    assert_eq!(&ty, type_map.get(&carried.body_result).unwrap());
+                    type_map.insert(*result, ty);
+                }
+                infer_reduction_types(reductions, type_map);
+            }
+            EquivocMirOperationKind::Loop { body, carried, .. } => {
+                infer_region_types(body, type_map);
+                assert_eq!(op.results.len(), carried.len());
+                for (result, carried) in op.results.iter().zip(carried) {
+                    let ty = *type_map.get(&carried.initial).unwrap();
+                    assert_eq!(&ty, type_map.get(&carried.body_result).unwrap());
+                    type_map.insert(*result, ty);
                 }
             }
-
-            EquivocMirInstruction::Break | EquivocMirInstruction::Continue => {}
+            EquivocMirOperationKind::CallFunction { .. }
+            | EquivocMirOperationKind::Return { .. } => {
+                todo!()
+            }
+            EquivocMirOperationKind::Break { .. } | EquivocMirOperationKind::Continue { .. } => {}
         }
     }
 }
 
-fn to_lir_var(id: EquivocMirVariable, type_map: &TypeMap) -> EquivocLirVariable {
-    let ty = type_map.get(&id).unwrap().clone();
+fn to_lir_var(id: EquivocMirValueId, type_map: &TypeMap) -> EquivocLirVariable {
     EquivocLirVariable {
         id: u32::from(id),
-        ty,
+        ty: *type_map.get(&id).unwrap(),
     }
 }
 
-fn build_single_block_from_instructions(
-    instructions: &[EquivocMirInstruction],
+fn add_region_result_assigns(
+    block_builder: &mut EquivocLirBasicBlockBuilder,
+    results: &[EquivocMirValueId],
+    values: &[EquivocMirValueId],
+    type_map: &TypeMap,
+) {
+    assert_eq!(results.len(), values.len());
+    for (result, value) in results.iter().zip(values) {
+        block_builder.add_instruction(EquivocLirInstruction::Assign {
+            out: to_lir_var(*result, type_map),
+            value: to_lir_var(*value, type_map),
+        });
+    }
+}
+
+fn add_loop_carried_assigns(
+    block_builder: &mut EquivocLirBasicBlockBuilder,
+    carried: &[EquivocMirLoopCarried],
+    type_map: &TypeMap,
+) {
+    for carried in carried {
+        block_builder.add_instruction(EquivocLirInstruction::Assign {
+            out: to_lir_var(carried.initial, type_map),
+            value: to_lir_var(carried.body_result, type_map),
+        });
+    }
+}
+
+fn infer_reduction_types(reductions: &[EquivocMirReduction], type_map: &mut TypeMap) {
+    for reduction in reductions {
+        let ty = *type_map.get(&reduction.initial).unwrap();
+        assert_eq!(&ty, type_map.get(&reduction.accumulator).unwrap());
+        assert_eq!(&ty, type_map.get(&reduction.reduced_value).unwrap());
+        match reduction.op {
+            EquivocMirReductionOp::LogicalAnd | EquivocMirReductionOp::LogicalOr => {
+                assert_eq!(ty, EquivocLirValueType::Boolean);
+            }
+            EquivocMirReductionOp::BitAnd
+            | EquivocMirReductionOp::BitOr
+            | EquivocMirReductionOp::BitXor => {
+                assert_eq!(ty, EquivocLirValueType::Integer);
+            }
+            EquivocMirReductionOp::Add
+            | EquivocMirReductionOp::Mul
+            | EquivocMirReductionOp::Min
+            | EquivocMirReductionOp::Max => {}
+        }
+        type_map.insert(reduction.result, ty);
+    }
+}
+
+fn build_blocks_from_region(
+    region: &EquivocMirRegion,
     type_map: &TypeMap,
     lir_builder: &mut EquivocLirBuilder,
     mut block_builder: EquivocLirBasicBlockBuilder,
-    finish_block: impl FnOnce(EquivocLirBasicBlockBuilder) -> EquivocLirBasicBlock,
+    finish_block: Box<dyn FnOnce(EquivocLirBasicBlockBuilder) -> EquivocLirBasicBlock + '_>,
 ) {
     macro_rules! refresh_block {
         ($id:ident => $terminate_instruction:expr) => {
@@ -154,138 +211,139 @@ fn build_single_block_from_instructions(
         };
         ($terminate_instruction:expr) => {
             refresh_block!(_ => $terminate_instruction);
-        }
+        };
     }
-    for instr in instructions {
-        match instr {
-            EquivocMirInstruction::LoadIntegerConst { out, value } => {
+
+    for op in &region.operations {
+        match &op.kind {
+            EquivocMirOperationKind::LoadIntegerConst { value } => {
                 block_builder.add_instruction(EquivocLirInstruction::LoadIntegerConst {
-                    out: to_lir_var(*out, type_map),
+                    out: to_lir_var(first_result(op), type_map),
                     value: *value,
                 });
             }
-            EquivocMirInstruction::LoadFloatConst { out, value } => {
+            EquivocMirOperationKind::LoadFloatConst { value } => {
                 block_builder.add_instruction(EquivocLirInstruction::LoadFloatConst {
-                    out: to_lir_var(*out, type_map),
+                    out: to_lir_var(first_result(op), type_map),
                     value: *value,
                 });
             }
-            EquivocMirInstruction::LoadStringConst { out, value } => {
+            EquivocMirOperationKind::LoadStringConst { value } => {
                 block_builder.add_instruction(EquivocLirInstruction::LoadStringConst {
-                    out: to_lir_var(*out, type_map),
+                    out: to_lir_var(first_result(op), type_map),
                     value: value.clone(),
                 });
             }
-            EquivocMirInstruction::LoadBooleanConst { out, value } => {
+            EquivocMirOperationKind::LoadBooleanConst { value } => {
                 block_builder.add_instruction(EquivocLirInstruction::LoadBooleanConst {
-                    out: to_lir_var(*out, type_map),
+                    out: to_lir_var(first_result(op), type_map),
                     value: *value,
                 });
             }
-            EquivocMirInstruction::Add { out, lhs, rhs } => {
+            EquivocMirOperationKind::Add { lhs, rhs } => {
                 block_builder.add_instruction(EquivocLirInstruction::Add {
-                    out: to_lir_var(*out, type_map),
+                    out: to_lir_var(first_result(op), type_map),
                     lhs: to_lir_var(*lhs, type_map),
                     rhs: to_lir_var(*rhs, type_map),
                 });
             }
-            EquivocMirInstruction::Sub { out, lhs, rhs } => {
+            EquivocMirOperationKind::Sub { lhs, rhs } => {
                 block_builder.add_instruction(EquivocLirInstruction::Sub {
-                    out: to_lir_var(*out, type_map),
+                    out: to_lir_var(first_result(op), type_map),
                     lhs: to_lir_var(*lhs, type_map),
                     rhs: to_lir_var(*rhs, type_map),
                 });
             }
-            EquivocMirInstruction::Mul { out, lhs, rhs } => {
+            EquivocMirOperationKind::Mul { lhs, rhs } => {
                 block_builder.add_instruction(EquivocLirInstruction::Mul {
-                    out: to_lir_var(*out, type_map),
+                    out: to_lir_var(first_result(op), type_map),
                     lhs: to_lir_var(*lhs, type_map),
                     rhs: to_lir_var(*rhs, type_map),
                 });
             }
-            EquivocMirInstruction::Div { out, lhs, rhs } => {
+            EquivocMirOperationKind::Div { lhs, rhs } => {
                 block_builder.add_instruction(EquivocLirInstruction::Div {
-                    out: to_lir_var(*out, type_map),
+                    out: to_lir_var(first_result(op), type_map),
                     lhs: to_lir_var(*lhs, type_map),
                     rhs: to_lir_var(*rhs, type_map),
                 });
             }
-            EquivocMirInstruction::Mod { out, lhs, rhs } => {
+            EquivocMirOperationKind::Mod { lhs, rhs } => {
                 block_builder.add_instruction(EquivocLirInstruction::Mod {
-                    out: to_lir_var(*out, type_map),
+                    out: to_lir_var(first_result(op), type_map),
                     lhs: to_lir_var(*lhs, type_map),
                     rhs: to_lir_var(*rhs, type_map),
                 });
             }
-            EquivocMirInstruction::Equals { out, lhs, rhs } => {
+            EquivocMirOperationKind::Equals { lhs, rhs } => {
                 block_builder.add_instruction(EquivocLirInstruction::Equals {
-                    out: to_lir_var(*out, type_map),
+                    out: to_lir_var(first_result(op), type_map),
                     lhs: to_lir_var(*lhs, type_map),
                     rhs: to_lir_var(*rhs, type_map),
                 });
             }
-            EquivocMirInstruction::NotEquals { out, lhs, rhs } => {
+            EquivocMirOperationKind::NotEquals { lhs, rhs } => {
                 block_builder.add_instruction(EquivocLirInstruction::NotEquals {
-                    out: to_lir_var(*out, type_map),
+                    out: to_lir_var(first_result(op), type_map),
                     lhs: to_lir_var(*lhs, type_map),
                     rhs: to_lir_var(*rhs, type_map),
                 });
             }
-            EquivocMirInstruction::LessThan { out, lhs, rhs } => {
+            EquivocMirOperationKind::LessThan { lhs, rhs } => {
                 block_builder.add_instruction(EquivocLirInstruction::LessThan {
-                    out: to_lir_var(*out, type_map),
+                    out: to_lir_var(first_result(op), type_map),
                     lhs: to_lir_var(*lhs, type_map),
                     rhs: to_lir_var(*rhs, type_map),
                 });
             }
-            EquivocMirInstruction::LessThanOrEquals { out, lhs, rhs } => {
+            EquivocMirOperationKind::LessThanOrEquals { lhs, rhs } => {
                 block_builder.add_instruction(EquivocLirInstruction::LessThanOrEquals {
-                    out: to_lir_var(*out, type_map),
+                    out: to_lir_var(first_result(op), type_map),
                     lhs: to_lir_var(*lhs, type_map),
                     rhs: to_lir_var(*rhs, type_map),
                 });
             }
-            EquivocMirInstruction::GreaterThan { out, lhs, rhs } => {
+            EquivocMirOperationKind::GreaterThan { lhs, rhs } => {
                 block_builder.add_instruction(EquivocLirInstruction::GreaterThan {
-                    out: to_lir_var(*out, type_map),
+                    out: to_lir_var(first_result(op), type_map),
                     lhs: to_lir_var(*lhs, type_map),
                     rhs: to_lir_var(*rhs, type_map),
                 });
             }
-            EquivocMirInstruction::GreaterThanOrEquals { out, lhs, rhs } => {
+            EquivocMirOperationKind::GreaterThanOrEquals { lhs, rhs } => {
                 block_builder.add_instruction(EquivocLirInstruction::GreaterThanOrEquals {
-                    out: to_lir_var(*out, type_map),
+                    out: to_lir_var(first_result(op), type_map),
                     lhs: to_lir_var(*lhs, type_map),
                     rhs: to_lir_var(*rhs, type_map),
                 });
             }
-            EquivocMirInstruction::WriteImage { image, path } => {
+            EquivocMirOperationKind::WriteImage { image, path } => {
                 block_builder.add_instruction(EquivocLirInstruction::WriteImage {
                     image: to_lir_var(*image, type_map),
                     path: to_lir_var(*path, type_map),
                 });
             }
-            EquivocMirInstruction::ImageWidth { out, image } => {
+            EquivocMirOperationKind::ImageWidth { image } => {
                 block_builder.add_instruction(EquivocLirInstruction::ImageWidth {
-                    out: to_lir_var(*out, type_map),
+                    out: to_lir_var(first_result(op), type_map),
                     image: to_lir_var(*image, type_map),
                 });
             }
-            EquivocMirInstruction::ImageHeight { out, image } => {
+            EquivocMirOperationKind::ImageHeight { image } => {
                 block_builder.add_instruction(EquivocLirInstruction::ImageHeight {
-                    out: to_lir_var(*out, type_map),
+                    out: to_lir_var(first_result(op), type_map),
                     image: to_lir_var(*image, type_map),
                 });
             }
-            EquivocMirInstruction::ReadImagePixel { out, image, x, y } => {
+            EquivocMirOperationKind::ReadImagePixel { image, x, y } => {
                 block_builder.add_instruction(EquivocLirInstruction::ReadImagePixel {
-                    out: to_lir_var(*out, type_map),
+                    out: to_lir_var(first_result(op), type_map),
                     image: to_lir_var(*image, type_map),
                     x: to_lir_var(*x, type_map),
                     y: to_lir_var(*y, type_map),
                 });
             }
-            EquivocMirInstruction::WriteImagePixel { image, x, y, pixel } => {
+            EquivocMirOperationKind::WriteImagePixel { image, x, y, pixel } => {
                 block_builder.add_instruction(EquivocLirInstruction::WriteImagePixel {
                     image: to_lir_var(*image, type_map),
                     x: to_lir_var(*x, type_map),
@@ -293,36 +351,37 @@ fn build_single_block_from_instructions(
                     pixel: to_lir_var(*pixel, type_map),
                 });
             }
-
-            EquivocMirInstruction::LoadImage { out, path } => {
-                let out = to_lir_var(*out, type_map);
+            EquivocMirOperationKind::LoadImage { path } => {
+                let out = to_lir_var(first_result(op), type_map);
                 refresh_block!(next_id => EquivocLirTerminateInstruction::LoadImage {
                     out,
                     path: to_lir_var(*path, type_map),
                     next: next_id,
                 });
-                refresh_block!(next_id => EquivocLirTerminateInstruction::WaitForLoadImage { image: out, next: next_id });
+                refresh_block!(next_id => EquivocLirTerminateInstruction::WaitForLoadImage {
+                    image: out,
+                    next: next_id,
+                });
             }
-            EquivocMirInstruction::CallFunction { out, name, args } => {
+            EquivocMirOperationKind::CallFunction { name, args } => {
                 refresh_block!(next_id => EquivocLirTerminateInstruction::CallFunction {
-                    out: out.map(|out| to_lir_var(out, type_map)),
+                    out: op.results.first().map(|out| to_lir_var(*out, type_map)),
                     name: name.clone(),
                     args: args.iter().map(|arg| to_lir_var(*arg, type_map)).collect(),
                     next: next_id,
                 });
             }
-            EquivocMirInstruction::Return { value } => {
+            EquivocMirOperationKind::Return { value } => {
                 let block = block_builder.finish(EquivocLirTerminateInstruction::Return {
                     value: value.map(|value| to_lir_var(value, type_map)),
                 });
                 lir_builder.add_basic_block(block);
                 return;
             }
-            EquivocMirInstruction::If {
-                variables,
+            EquivocMirOperationKind::If {
                 condition,
-                then_instructions,
-                else_instructions,
+                then_region,
+                else_region,
             } => {
                 let then_block = lir_builder.next_block();
                 let else_block = lir_builder.next_block();
@@ -332,100 +391,79 @@ fn build_single_block_from_instructions(
                     else_block: else_block.id(),
                 });
                 let next_id = block_builder.id();
-                fn finish_then_block(
-                    variables: &[IfVariableUpdate],
-                    next_id: EquivocLirBasicBlockId,
-                    type_map: &TypeMap,
-                ) -> impl FnOnce(EquivocLirBasicBlockBuilder) -> EquivocLirBasicBlock
-                {
-                    move |mut block_builder| {
-                        for v in variables {
-                            block_builder.add_instruction(EquivocLirInstruction::Assign {
-                                out: to_lir_var(v.variable, type_map),
-                                value: to_lir_var(v.then_variable, type_map),
-                            });
-                        }
-                        block_builder.finish(EquivocLirTerminateInstruction::Next {
-                            next_block: next_id,
-                        })
-                    }
-                }
-                fn finish_else_block(
-                    variables: &[IfVariableUpdate],
-                    next_id: EquivocLirBasicBlockId,
-                    type_map: &TypeMap,
-                ) -> impl FnOnce(EquivocLirBasicBlockBuilder) -> EquivocLirBasicBlock
-                {
-                    move |mut block_builder| {
-                        for v in variables {
-                            block_builder.add_instruction(EquivocLirInstruction::Assign {
-                                out: to_lir_var(v.variable, type_map),
-                                value: to_lir_var(v.else_variable, type_map),
-                            });
-                        }
-                        block_builder.finish(EquivocLirTerminateInstruction::Next {
-                            next_block: next_id,
-                        })
-                    }
-                }
-                build_single_block_from_instructions(
-                    then_instructions,
+                build_blocks_from_region(
+                    then_region,
                     type_map,
                     lir_builder,
                     then_block,
-                    finish_then_block(&variables, next_id, type_map),
+                    Box::new(|mut block_builder| {
+                        add_region_result_assigns(
+                            &mut block_builder,
+                            &op.results,
+                            &then_region.results,
+                            type_map,
+                        );
+                        block_builder.finish(EquivocLirTerminateInstruction::Next {
+                            next_block: next_id,
+                        })
+                    }),
                 );
-                build_single_block_from_instructions(
-                    else_instructions,
+                build_blocks_from_region(
+                    else_region,
                     type_map,
                     lir_builder,
                     else_block,
-                    finish_else_block(&variables, next_id, type_map),
+                    Box::new(|mut block_builder| {
+                        add_region_result_assigns(
+                            &mut block_builder,
+                            &op.results,
+                            &else_region.results,
+                            type_map,
+                        );
+                        block_builder.finish(EquivocLirTerminateInstruction::Next {
+                            next_block: next_id,
+                        })
+                    }),
                 );
             }
-            EquivocMirInstruction::For {
-                variable_updates,
-                loop_count,
-                loop_index,
-                instructions,
+            EquivocMirOperationKind::For {
+                count,
+                index,
+                carried,
+                reductions,
+                body,
+                ..
             } => {
+                assert!(
+                    reductions.is_empty(),
+                    "MIR reductions are represented but not lowered to LIR yet"
+                );
                 let for_block = lir_builder.next_block();
                 refresh_block!(next_block => EquivocLirTerminateInstruction::For {
-                    loop_count: to_lir_var(*loop_count, type_map),
-                    loop_index: to_lir_var(*loop_index, type_map),
+                    loop_count: to_lir_var(*count, type_map),
+                    loop_index: to_lir_var(*index, type_map),
                     loop_block: for_block.id(),
                     next_block,
                 });
-                fn finish_for(
-                    variable_updates: &[LoopVariableUpdate],
-                    type_map: &TypeMap,
-                ) -> impl FnOnce(EquivocLirBasicBlockBuilder) -> EquivocLirBasicBlock
-                {
-                    move |mut block_builder| {
-                        for v in variable_updates {
-                            block_builder.add_instruction(EquivocLirInstruction::Assign {
-                                out: to_lir_var(v.base, type_map),
-                                value: to_lir_var(v.updated, type_map),
-                            });
-                        }
-                        block_builder.finish(EquivocLirTerminateInstruction::Continue)
-                    }
-                }
-                build_single_block_from_instructions(
-                    instructions,
+                build_blocks_from_region(
+                    body,
                     type_map,
                     lir_builder,
                     for_block,
-                    finish_for(&variable_updates, type_map),
+                    Box::new(|mut block_builder| {
+                        add_loop_carried_assigns(&mut block_builder, carried, type_map);
+                        block_builder.finish(EquivocLirTerminateInstruction::Continue)
+                    }),
                 );
             }
-            EquivocMirInstruction::Loop { .. }
-            | EquivocMirInstruction::Break
-            | EquivocMirInstruction::Continue => {
+            EquivocMirOperationKind::Loop { .. }
+            | EquivocMirOperationKind::Break { .. }
+            | EquivocMirOperationKind::Continue { .. } => {
                 todo!()
             }
         }
     }
+
     let block = finish_block(block_builder);
     lir_builder.add_basic_block(block);
 }
@@ -434,31 +472,29 @@ pub fn convert_equivoc_mir_to_equivoc_lir(mir: &EquivocMir) -> EquivocLir {
     let mut type_map = TypeMap::new();
 
     for func in &mir.functions {
-        infer_types(&func.instructions, &mut type_map);
+        infer_region_types(&func.body, &mut type_map);
     }
-    infer_types(&mir.main_instructions, &mut type_map);
+    infer_region_types(&mir.main_region, &mut type_map);
 
     let mut lir_builder = EquivocLirBuilder::new();
 
     for func in &mir.functions {
-        let lir_args: Vec<_> = func
+        let lir_args = func
             .args
             .iter()
-            .map(|mvar| to_lir_var(*mvar, &type_map))
+            .map(|value| to_lir_var(*value, &type_map))
             .collect();
-
         let entry_block = lir_builder.next_block();
         let entry_id = entry_block.id();
-        build_single_block_from_instructions(
-            &func.instructions,
+        build_blocks_from_region(
+            &func.body,
             &type_map,
             &mut lir_builder,
             entry_block,
-            |block_builder| {
+            Box::new(|block_builder| {
                 block_builder.finish(EquivocLirTerminateInstruction::Return { value: None })
-            },
+            }),
         );
-
         lir_builder.add_function(EquivocLirFunction {
             name: func.name.clone(),
             args: lir_args,
@@ -468,14 +504,14 @@ pub fn convert_equivoc_mir_to_equivoc_lir(mir: &EquivocMir) -> EquivocLir {
 
     let entry_block = lir_builder.next_block();
     let entry_id = entry_block.id();
-    build_single_block_from_instructions(
-        &mir.main_instructions,
+    build_blocks_from_region(
+        &mir.main_region,
         &type_map,
         &mut lir_builder,
         entry_block,
-        |block_builder| {
+        Box::new(|block_builder| {
             block_builder.finish(EquivocLirTerminateInstruction::Return { value: None })
-        },
+        }),
     );
 
     lir_builder.finish(entry_id)
