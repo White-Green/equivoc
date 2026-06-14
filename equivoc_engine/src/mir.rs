@@ -98,7 +98,7 @@ pub struct EquivocMirOperation {
     pub effects: EquivocMirEffectSummary,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct EquivocMirEffectSummary {
     pub reads: Vec<EquivocMirMemoryAccess>,
     pub writes: Vec<EquivocMirMemoryAccess>,
