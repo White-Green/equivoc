@@ -3,38 +3,96 @@ use crate::mir::{
     EquivocMirMemoryRegion, EquivocMirMemoryResource, EquivocMirOperation, EquivocMirOperationId,
     EquivocMirOperationKind, EquivocMirRegion, EquivocMirValueId,
 };
-use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 
-pub struct AnalysisNil;
-pub struct AnalysisCons<Head, Tail>(PhantomData<(Head, Tail)>);
+pub struct Nil;
+pub struct Cons<Head, Tail>(Head, Tail);
 
-pub type EmptyAnalyses = Analyses<AnalysisNil>;
+pub struct Zero;
+pub struct Succ<N>(PhantomData<N>);
 
-pub struct Analyses<Valid> {
-    store: HashMap<TypeId, Box<dyn Any>>,
-    _valid: PhantomData<Valid>,
+pub trait HListContains<T, I> {
+    fn get(&self) -> &T;
+}
+
+pub trait HListAdded<T> {
+    type Output;
+    fn added(self, value: T) -> Self::Output;
+}
+
+pub trait HListRemoved<T, I> {
+    type Output;
+    fn removed(self) -> (Self::Output, T);
+}
+
+impl<T, Tail> HListContains<T, Zero> for Cons<T, Tail> {
+    fn get(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<A, T, Tail, N> HListContains<T, Succ<N>> for Cons<A, Tail>
+where
+    Tail: HListContains<T, N>,
+{
+    fn get(&self) -> &T {
+        self.1.get()
+    }
+}
+
+impl<T, Tail> HListAdded<T> for Tail {
+    type Output = Cons<T, Tail>;
+    fn added(self, value: T) -> Self::Output {
+        Cons(value, self)
+    }
+}
+
+impl<T, Tail> HListRemoved<T, Zero> for Cons<T, Tail> {
+    type Output = Tail;
+    fn removed(self) -> (Self::Output, T) {
+        let Cons(head, tail) = self;
+        (tail, head)
+    }
+}
+
+impl<A, T, Tail, N> HListRemoved<T, Succ<N>> for Cons<A, Tail>
+where
+    Tail: HListRemoved<T, N>,
+{
+    type Output = Cons<A, <Tail as HListRemoved<T, N>>::Output>;
+    fn removed(self) -> (Self::Output, T) {
+        let Cons(head, tail) = self;
+        let (tail, removed) = tail.removed();
+        (Cons(head, tail), removed)
+    }
+}
+
+pub struct AnalysisEntry<A: MirAnalysis>(A::Output);
+
+pub type EmptyAnalyses = Analyses<Nil>;
+
+pub struct Analyses<List> {
+    list: List,
 }
 
 impl Default for EmptyAnalyses {
     fn default() -> Self {
-        Self {
-            store: HashMap::new(),
-            _valid: PhantomData,
-        }
+        Self { list: Nil }
     }
 }
 
-impl<Valid> Analyses<Valid> {
-    fn insert<A>(mut self, output: A::Output) -> Analyses<AnalysisCons<A, Valid>>
+impl<List> Analyses<List> {
+    fn insert<A>(
+        self,
+        output: A::Output,
+    ) -> Analyses<<List as HListAdded<AnalysisEntry<A>>>::Output>
     where
         A: MirAnalysis,
+        List: HListAdded<AnalysisEntry<A>>,
     {
-        self.store.insert(TypeId::of::<A>(), Box::new(output));
         Analyses {
-            store: self.store,
-            _valid: PhantomData,
+            list: self.list.added(AnalysisEntry(output)),
         }
     }
 
@@ -42,14 +100,26 @@ impl<Valid> Analyses<Valid> {
         EmptyAnalyses::default()
     }
 
-    fn get<A>(&self) -> &A::Output
+    pub fn get<A, I>(&self) -> &A::Output
     where
         A: MirAnalysis,
+        List: HListContains<AnalysisEntry<A>, I>,
     {
-        self.store
-            .get(&TypeId::of::<A>())
-            .and_then(|output| output.downcast_ref::<A::Output>())
-            .expect("analysis result must be present in the typed analysis set")
+        &<List as HListContains<AnalysisEntry<A>, I>>::get(&self.list).0
+    }
+
+    pub fn remove<A, I>(
+        self,
+    ) -> (
+        Analyses<<List as HListRemoved<AnalysisEntry<A>, I>>::Output>,
+        A::Output,
+    )
+    where
+        A: MirAnalysis,
+        List: HListRemoved<AnalysisEntry<A>, I>,
+    {
+        let (list, entry) = <List as HListRemoved<AnalysisEntry<A>, I>>::removed(self.list);
+        (Analyses { list }, entry.0)
     }
 }
 
@@ -122,16 +192,17 @@ pub trait MirPipelineStep<In> {
     fn run(self, mir: &mut EquivocMir, analyses: In, ctx: &mut MirPassContext) -> Self::Out;
 }
 
-impl<Valid, A> MirPipelineStep<Analyses<Valid>> for RunAnalysis<A>
+impl<List, A> MirPipelineStep<Analyses<List>> for RunAnalysis<A>
 where
     A: MirAnalysis,
+    List: HListAdded<AnalysisEntry<A>>,
 {
-    type Out = Analyses<AnalysisCons<A, Valid>>;
+    type Out = Analyses<<List as HListAdded<AnalysisEntry<A>>>::Output>;
 
     fn run(
         self,
         mir: &mut EquivocMir,
-        analyses: Analyses<Valid>,
+        analyses: Analyses<List>,
         ctx: &mut MirPassContext,
     ) -> Self::Out {
         let output = A::run(mir, &analyses, &mut ctx.diagnostics);
@@ -216,7 +287,7 @@ pub fn optimize_source_mir(mir: &mut EquivocMir) -> MirPassContext {
             run_analysis::<DefUseAnalysis>(),
             run_analysis::<LoopAnalysis>(),
             run_analysis::<EffectAnalysis>(),
-            run_transform(RecordAnalysisSummary),
+            run_transform(record_analysis_summary()),
         ),
     )
 }
@@ -321,17 +392,44 @@ impl<Valid> MirTransform<Analyses<Valid>> for RecomputeEffectSummaries {
     }
 }
 
-pub struct RecordAnalysisSummary;
+pub struct RecordAnalysisSummary<
+    DefUseIndex = Succ<Succ<Zero>>,
+    LoopIndex = Succ<Zero>,
+    EffectIndex = Zero,
+> {
+    _marker: PhantomData<(DefUseIndex, LoopIndex, EffectIndex)>,
+}
 
-type SourceSummaryAnalyses = Analyses<
-    AnalysisCons<
-        EffectAnalysis,
-        AnalysisCons<LoopAnalysis, AnalysisCons<DefUseAnalysis, AnalysisNil>>,
-    >,
->;
+impl<DefUseIndex, LoopIndex, EffectIndex>
+    RecordAnalysisSummary<DefUseIndex, LoopIndex, EffectIndex>
+{
+    pub fn new() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+}
 
-impl MirTransform<SourceSummaryAnalyses> for RecordAnalysisSummary {
-    type Out = SourceSummaryAnalyses;
+impl<DefUseIndex, LoopIndex, EffectIndex> Default
+    for RecordAnalysisSummary<DefUseIndex, LoopIndex, EffectIndex>
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub fn record_analysis_summary() -> RecordAnalysisSummary {
+    RecordAnalysisSummary::new()
+}
+
+impl<List, DefUseIndex, LoopIndex, EffectIndex> MirTransform<Analyses<List>>
+    for RecordAnalysisSummary<DefUseIndex, LoopIndex, EffectIndex>
+where
+    List: HListContains<AnalysisEntry<DefUseAnalysis>, DefUseIndex>
+        + HListContains<AnalysisEntry<LoopAnalysis>, LoopIndex>
+        + HListContains<AnalysisEntry<EffectAnalysis>, EffectIndex>,
+{
+    type Out = Analyses<List>;
 
     fn name(&self) -> &'static str {
         "record-analysis-summary"
@@ -340,14 +438,14 @@ impl MirTransform<SourceSummaryAnalyses> for RecordAnalysisSummary {
     fn run(
         &mut self,
         _mir: &mut EquivocMir,
-        analyses: SourceSummaryAnalyses,
+        analyses: Analyses<List>,
         diagnostics: &mut Vec<MirDiagnostic>,
     ) -> (Self::Out, MirTransformResult) {
-        let def_use = analyses.get::<DefUseAnalysis>();
-        let loops = analyses.get::<LoopAnalysis>();
-        let effects = analyses.get::<EffectAnalysis>();
+        let def_use = analyses.get::<DefUseAnalysis, DefUseIndex>();
+        let loops = analyses.get::<LoopAnalysis, LoopIndex>();
+        let effects = analyses.get::<EffectAnalysis, EffectIndex>();
         diagnostics.push(MirDiagnostic {
-            pass_name: self.name(),
+            pass_name: "record-analysis-summary",
             message: format!(
                 "values_with_uses={}, loops={}, reads={}, writes={}",
                 def_use.uses.len(),
@@ -599,7 +697,7 @@ mod tests {
                 run_analysis::<DefUseAnalysis>(),
                 run_analysis::<LoopAnalysis>(),
                 run_analysis::<EffectAnalysis>(),
-                run_transform(RecordAnalysisSummary),
+                run_transform(record_analysis_summary()),
             ),
         );
 
@@ -619,16 +717,27 @@ mod tests {
             run_analysis::<EffectAnalysis>(),
             run_transform(RecomputeEffectSummaries),
             run_analysis::<EffectAnalysis>(),
-            run_transform(NeedsEffectAnalysis),
+            run_transform(NeedsEffectAnalysis::<Zero>::new()),
         ));
     }
 
-    struct NeedsEffectAnalysis;
+    struct NeedsEffectAnalysis<I> {
+        _marker: PhantomData<I>,
+    }
 
-    type NeedsEffectInput = Analyses<AnalysisCons<EffectAnalysis, AnalysisNil>>;
+    impl<I> NeedsEffectAnalysis<I> {
+        fn new() -> Self {
+            Self {
+                _marker: PhantomData,
+            }
+        }
+    }
 
-    impl MirTransform<NeedsEffectInput> for NeedsEffectAnalysis {
-        type Out = NeedsEffectInput;
+    impl<List, I> MirTransform<Analyses<List>> for NeedsEffectAnalysis<I>
+    where
+        List: HListContains<AnalysisEntry<EffectAnalysis>, I>,
+    {
+        type Out = Analyses<List>;
 
         fn name(&self) -> &'static str {
             "needs-effect-analysis"
@@ -637,13 +746,26 @@ mod tests {
         fn run(
             &mut self,
             _mir: &mut EquivocMir,
-            analyses: NeedsEffectInput,
+            analyses: Analyses<List>,
             _diagnostics: &mut Vec<MirDiagnostic>,
         ) -> (Self::Out, MirTransformResult) {
-            let effects = analyses.get::<EffectAnalysis>();
+            let effects = analyses.get::<EffectAnalysis, I>();
             assert_eq!(effects.read_count, 0);
             (analyses, MirTransformResult { changed: false })
         }
+    }
+
+    #[test]
+    fn analysis_results_can_be_removed_by_type_index() {
+        let analyses = EmptyAnalyses::default()
+            .insert::<DefUseAnalysis>(DefUseInfo::default())
+            .insert::<EffectAnalysis>(EffectInfo::default());
+
+        let (analyses, effects) = analyses.remove::<EffectAnalysis, Zero>();
+
+        assert_eq!(effects.read_count, 0);
+        let def_use = analyses.get::<DefUseAnalysis, Zero>();
+        assert!(def_use.uses.is_empty());
     }
 
     fn sample_mir() -> EquivocMir {
