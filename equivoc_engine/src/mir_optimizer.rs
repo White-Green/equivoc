@@ -1,13 +1,12 @@
 mod analyses;
 mod transforms;
 
+use crate::mir::EquivocMir;
 pub use analyses::{
     DefUseAnalysis, DefUseInfo, EffectAnalysis, EffectInfo, LoopAnalysis, LoopInfo,
 };
-pub use transforms::{RecomputeEffectSummaries, RecordAnalysisSummary, record_analysis_summary};
-
-use crate::mir::EquivocMir;
 use std::marker::PhantomData;
+pub use transforms::{RecomputeEffectSummaries, RecordAnalysisSummary, record_analysis_summary};
 
 pub struct Nil;
 pub struct Cons<Head, Tail>(Head, Tail);
